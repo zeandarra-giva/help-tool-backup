@@ -1,6 +1,6 @@
 # help-tool-backup
 
-Exports every table in an Access database (`.accdb` / `.mdb`) to static, read-only HTML pages styled with plain CSS. Use it to view the data offline when the Access front-end won't open, for example when its VBA modules are corrupted.
+Exports every table in an Access database (`.accdb` / `.mdb`) into **one self-contained, read-only HTML file**. Share that single file with anyone: it opens offline in any browser, with no folders, installs or internet needed. Use it to view the data offline when the Access front-end won't open, for example when its VBA modules are corrupted.
 
 The export reads the tables directly through the Access database engine. It never opens forms or runs VBA, and it doesn't change the database.
 
@@ -9,13 +9,16 @@ The export reads the tables directly through the Access database engine. It neve
 | File | Purpose |
 |---|---|
 | `export.bat` | Double-click to run the export and open the result |
-| `export-to-html.ps1` | Reads the database and writes one HTML page per table or query |
-| `styles.css` | Styling for the generated pages (copied into the output) |
+| `export-to-html.ps1` | Reads the database and writes the snapshot file |
+| `styles.css` | Styling, built into the snapshot file (edit to change the look) |
 
 ## Usage (Windows)
 
 1. Double-click `export.bat`. It finds `HELP+.accdb` automatically.
-2. The pages are written to an `html\` folder next to the script, and `index.html` opens in your browser.
+2. The snapshot is saved as `snapshots\HELP+ snapshot <date time>.html` and opens in your browser.
+3. Send that one `.html` file to whoever needs it, by email, chat or a shared drive.
+
+The file lists every table. Click one to view it, and click **All tables** to go back. Navigation is pure HTML/CSS, with no JavaScript.
 
 To use a specific database file instead, drag the `.accdb` onto `export.bat`.
 
@@ -37,7 +40,7 @@ Run it again any time to refresh the snapshot.
 You can also run the script directly:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File export-to-html.ps1 -OutDir ".\html" [-DbPath "C:\path\db.accdb"] [-DbName "HELP+.accdb"] [-SkipQueries]
+powershell -ExecutionPolicy Bypass -File export-to-html.ps1 -OutDir ".\snapshots" [-DbPath "C:\path\db.accdb"] [-DbName "HELP+.accdb"] [-SkipQueries] [-NoOpen]
 ```
 
 ## Notes
@@ -46,4 +49,5 @@ powershell -ExecutionPolicy Bypass -File export-to-html.ps1 -OutDir ".\html" [-D
 - **Queries that use forms or VBA functions can't run outside Access.** They're listed on the index page as unavailable.
 - **The Access driver comes with Office.** If you get "Access driver not available", the batch file retries with 32-bit PowerShell automatically. If it still fails, install the [Microsoft Access Database Engine](https://www.microsoft.com/en-us/download/details.aspx?id=54920) at the same 32- or 64-bit version as Office.
 - **Pictures and attachment fields show as `[binary]`.**
-- **`html/` and `last-db-path.txt` are git-ignored** because they contain database records and your network paths. Don't commit them to this public repo.
+- **Each run creates a new dated file**, so older snapshots are kept.
+- **`snapshots/` and `last-db-path.txt` are git-ignored** because they contain database records and your network paths. Don't commit them to this public repo.

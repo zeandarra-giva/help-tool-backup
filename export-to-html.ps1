@@ -1,10 +1,12 @@
 <#
-  Exports every table (and saved select query) in an Access database to static
-  HTML pages styled by styles.css. Read-only: nothing in the database changes,
-  and no forms or VBA run, so corrupted modules don't get in the way.
+  Exports every table (and saved select query) in an Access database to ONE
+  self-contained HTML file: styles.css is inlined and every table lives in the
+  same file, so the snapshot can be shared and opened offline on its own.
+  Read-only: nothing in the database changes, and no forms or VBA run, so
+  corrupted modules don't get in the way.
 
   Usage:
-    powershell -ExecutionPolicy Bypass -File export-to-html.ps1 -OutDir ".\html" [-DbPath "X:\db.accdb"] [-DbName "HELP+.accdb"]
+    powershell -ExecutionPolicy Bypass -File export-to-html.ps1 -OutDir ".\snapshots" [-DbPath "X:\db.accdb"] [-DbName "HELP+.accdb"] [-NoOpen]
 
   Without -DbPath, the database is located by file name (see Find-Database)
   and the result is remembered in last-db-path.txt for the next run.
@@ -16,7 +18,8 @@ param(
     [Parameter(Mandatory)] [string] $OutDir,
     [string] $DbPath,
     [string] $DbName = 'HELP+.accdb',
-    [switch] $SkipQueries
+    [switch] $SkipQueries,
+    [switch] $NoOpen
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,6 +72,8 @@ function Find-Database {
     return $null
 }
 
+function Enc([object] $v) { [System.Net.WebUtility]::HtmlEncode([string]$v) }
+
 function Format-Cell([object] $v) {
     if ($null -eq $v -or $v -is [System.DBNull]) { return '' }
     if ($v -is [byte[]]) { return '<span class="muted">[binary]</span>' }
@@ -79,28 +84,10 @@ function Format-Cell([object] $v) {
         if ($v.TimeOfDay.Ticks -eq 0) { return $v.ToString('yyyy-MM-dd') }
         return $v.ToString('yyyy-MM-dd HH:mm')
     }
-    $s = [System.Net.WebUtility]::HtmlEncode([string]$v)
-    return $s -replace "`r?`n", '<br>'
+    return (Enc $v) -replace "`r?`n", '<br>'
 }
 
-function Write-Page([string] $file, [string] $title, [string] $body) {
-    $t = [System.Net.WebUtility]::HtmlEncode($title)
-    $html = @"
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>$t</title>
-<link rel="stylesheet" href="styles.css">
-</head>
-<body>
-$body
-</body>
-</html>
-"@
-    [System.IO.File]::WriteAllText((Join-Path $OutDir $file), $html, $utf8)
-}
+# ---------------------------------------------------------------- locate ---
 
 if ($DbPath) {
     if (-not (Test-Path -LiteralPath $DbPath)) {
@@ -120,10 +107,8 @@ $DbPath = (Resolve-Path -LiteralPath $DbPath).ProviderPath
 Write-Host "Using database: $DbPath"
 [System.IO.File]::WriteAllText($cacheFile, $DbPath, $utf8)
 
-New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-$OutDir = (Resolve-Path -LiteralPath $OutDir).ProviderPath
-$css = Join-Path $PSScriptRoot 'styles.css'
-if (Test-Path -LiteralPath $css) { Copy-Item -LiteralPath $css -Destination $OutDir -Force }
+# ------------------------------------------------------------------ read ---
+# Fills $entries: one object per table/query with its DataTable (or Error).
 
 $csb = New-Object System.Data.OleDb.OleDbConnectionStringBuilder
 $csb['Provider'] = 'Microsoft.ACE.OLEDB.12.0'
@@ -143,8 +128,6 @@ try {
     exit 1
 }
 
-$dbName = [System.IO.Path]::GetFileNameWithoutExtension($DbPath)
-$stamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
 $types = @('TABLE', 'LINK', 'PASS-THROUGH')
 if (-not $SkipQueries) { $types += 'VIEW' }
 
@@ -153,44 +136,86 @@ $objects = $conn.GetSchema('Tables').Rows |
     Sort-Object @{ Expression = { $_.TABLE_TYPE -eq 'VIEW' } }, TABLE_NAME
 
 $entries = @()
-$usedFiles = @{}
-
 foreach ($obj in $objects) {
     $name = $obj.TABLE_NAME
     $kind = if ($obj.TABLE_TYPE -eq 'VIEW') { 'Query' } else { 'Table' }
-
-    $base = ($name -replace '[^\w\-]+', '_').Trim('_')
-    if (-not $base) { $base = 'object' }
-    $file = "$base.html"
-    $n = 2
-    while ($usedFiles.ContainsKey($file.ToLower())) { $file = "$base-$n.html"; $n++ }
-    $usedFiles[$file.ToLower()] = $true
-
-    Write-Host "Exporting $kind $name ..."
+    Write-Host "Reading $kind $name ..."
     try {
         $cmd = $conn.CreateCommand()
         $cmd.CommandText = "SELECT * FROM [$name]"
         $dt = New-Object System.Data.DataTable
         [void](New-Object System.Data.OleDb.OleDbDataAdapter($cmd)).Fill($dt)
+        $entries += [pscustomobject]@{ Name = $name; Kind = $kind; Data = $dt; Error = $null }
     } catch {
         # Queries that reference forms or VBA functions can't run outside Access
-        $entries += [pscustomobject]@{ Name = $name; Kind = $kind; File = $null; Rows = 0; Error = $_.Exception.Message }
-        continue
+        $entries += [pscustomobject]@{ Name = $name; Kind = $kind; Data = $null; Error = $_.Exception.Message }
     }
+}
+$conn.Close()
 
-    $sb = New-Object System.Text.StringBuilder
-    $enc = [System.Net.WebUtility]::HtmlEncode($name)
-    [void]$sb.Append("<header class=`"bar`"><a href=`"index.html`">&larr; $([System.Net.WebUtility]::HtmlEncode($dbName))</a>")
-    [void]$sb.Append("<span class=`"muted`">Snapshot $stamp</span></header>`n<main>`n")
-    [void]$sb.Append("<h1>$enc <span class=`"tag`">$kind</span></h1>`n<p class=`"muted`">$($dt.Rows.Count) rows</p>`n")
+# ---------------------------------------------------------------- render ---
+# One page, no JavaScript: each table is a <section> shown via CSS :target
+# when its link is clicked; the index shows when no table is selected.
+
+$dbTitle = [System.IO.Path]::GetFileNameWithoutExtension($DbPath)
+$stamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
+$cssPath = Join-Path $PSScriptRoot 'styles.css'
+$css = if (Test-Path -LiteralPath $cssPath) { [System.IO.File]::ReadAllText($cssPath) } else { '' }
+
+$usedIds = @{}
+foreach ($e in $entries) {
+    $base = ($e.Name -replace '[^\w\-]+', '-').Trim('-').ToLower()
+    if (-not $base) { $base = 'object' }
+    $id = "t-$base"
+    $n = 2
+    while ($usedIds.ContainsKey($id)) { $id = "t-$base-$n"; $n++ }
+    $usedIds[$id] = $true
+    $e | Add-Member -NotePropertyName Id -NotePropertyValue $id
+}
+
+$sb = New-Object System.Text.StringBuilder
+[void]$sb.Append(@"
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$(Enc $dbTitle) - snapshot $stamp</title>
+<style>
+$css
+</style>
+</head>
+<body>
+<header class="bar"><a href="#" class="brand">$(Enc $dbTitle)</a><span class="muted">Read-only snapshot &middot; $stamp</span></header>
+
+"@)
+
+[void]$sb.Append("<main class=`"home`">`n<h1>$(Enc $dbTitle)</h1>`n")
+foreach ($group in @(@('Table', 'Tables'), @('Query', 'Queries'))) {
+    $items = @($entries | Where-Object Kind -eq $group[0])
+    if ($items.Count -eq 0) { continue }
+    [void]$sb.Append("<h2>$($group[1])</h2>`n<ul class=`"cards`">`n")
+    foreach ($e in $items) {
+        if ($e.Data) {
+            [void]$sb.Append("<li><a class=`"card`" href=`"#$($e.Id)`"><span class=`"card-name`">$(Enc $e.Name)</span><span class=`"muted`">$($e.Data.Rows.Count) rows</span></a></li>`n")
+        } else {
+            [void]$sb.Append("<li><div class=`"card card-off`" title=`"$(Enc $e.Error)`"><span class=`"card-name`">$(Enc $e.Name)</span><span class=`"muted`">Can't run outside Access</span></div></li>`n")
+        }
+    }
+    [void]$sb.Append("</ul>`n")
+}
+[void]$sb.Append("</main>`n`n")
+
+foreach ($e in ($entries | Where-Object Data)) {
+    $dt = $e.Data
+    [void]$sb.Append("<section class=`"sheet`" id=`"$($e.Id)`">`n<a href=`"#`" class=`"back`">&larr; All tables</a>`n")
+    [void]$sb.Append("<h1>$(Enc $e.Name) <span class=`"tag`">$($e.Kind)</span></h1>`n<p class=`"muted`">$($dt.Rows.Count) rows</p>`n")
 
     if ($dt.Rows.Count -eq 0) {
         [void]$sb.Append("<p class=`"empty`">No records.</p>`n")
     } else {
         [void]$sb.Append("<div class=`"table-wrap`"><table>`n<thead><tr>")
-        foreach ($col in $dt.Columns) {
-            [void]$sb.Append("<th>$([System.Net.WebUtility]::HtmlEncode($col.ColumnName))</th>")
-        }
+        foreach ($col in $dt.Columns) { [void]$sb.Append("<th>$(Enc $col.ColumnName)</th>") }
         [void]$sb.Append("</tr></thead>`n<tbody>`n")
         foreach ($row in $dt.Rows) {
             [void]$sb.Append('<tr>')
@@ -203,36 +228,20 @@ foreach ($obj in $objects) {
         }
         [void]$sb.Append("</tbody>`n</table></div>`n")
     }
-    [void]$sb.Append('</main>')
-
-    Write-Page $file "$name - $dbName" $sb.ToString()
-    $entries += [pscustomobject]@{ Name = $name; Kind = $kind; File = $file; Rows = $dt.Rows.Count; Error = $null }
+    [void]$sb.Append("</section>`n`n")
 }
+[void]$sb.Append("</body>`n</html>`n")
 
-$conn.Close()
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$OutDir = (Resolve-Path -LiteralPath $OutDir).ProviderPath
+$safeTitle = $dbTitle -replace '[\\/:*?"<>|]', '_'
+$outFile = Join-Path $OutDir "$safeTitle snapshot $(Get-Date -Format 'yyyy-MM-dd HHmm').html"
+[System.IO.File]::WriteAllText($outFile, $sb.ToString(), $utf8)
 
-$idx = New-Object System.Text.StringBuilder
-[void]$idx.Append("<header class=`"bar`"><strong>$([System.Net.WebUtility]::HtmlEncode($dbName))</strong>")
-[void]$idx.Append("<span class=`"muted`">Read-only snapshot &middot; $stamp</span></header>`n<main>`n")
-[void]$idx.Append("<h1>$([System.Net.WebUtility]::HtmlEncode($dbName))</h1>`n")
-
-foreach ($group in @('Table', 'Query')) {
-    $items = @($entries | Where-Object Kind -eq $group)
-    if ($items.Count -eq 0) { continue }
-    [void]$idx.Append("<h2>$($group)s</h2>`n<ul class=`"cards`">`n")
-    foreach ($e in $items) {
-        $en = [System.Net.WebUtility]::HtmlEncode($e.Name)
-        if ($e.File) {
-            [void]$idx.Append("<li><a class=`"card`" href=`"$($e.File)`"><span class=`"card-name`">$en</span><span class=`"muted`">$($e.Rows) rows</span></a></li>`n")
-        } else {
-            $err = [System.Net.WebUtility]::HtmlEncode($e.Error)
-            [void]$idx.Append("<li><div class=`"card card-off`" title=`"$err`"><span class=`"card-name`">$en</span><span class=`"muted`">Can't run outside Access</span></div></li>`n")
-        }
-    }
-    [void]$idx.Append("</ul>`n")
-}
-[void]$idx.Append('</main>')
-
-Write-Page 'index.html' $dbName $idx.ToString()
-Write-Host "Done: $(($entries | Where-Object File).Count) pages written to $OutDir"
+$sizeKb = [math]::Ceiling((Get-Item -LiteralPath $outFile).Length / 1KB)
+Write-Host ""
+Write-Host "Done: $(@($entries | Where-Object Data).Count) tables/queries in one file ($sizeKb KB)"
+Write-Host "  $outFile"
+Write-Host "Share this single file - it opens offline in any browser."
+if (-not $NoOpen) { Invoke-Item -LiteralPath $outFile }
 exit 0

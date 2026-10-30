@@ -49,7 +49,17 @@ a:hover { text-decoration: underline; }
   border-bottom: 1px solid var(--border);
 }
 
-main { padding: 24px; max-width: 1600px; margin: 0 auto; }
+.brand { font-weight: 700; color: var(--text); }
+
+main, .sheet { padding: 24px; max-width: 1600px; margin: 0 auto; }
+
+/* Single-file navigation without JavaScript: a table shows when its
+   #id is the URL target; the index shows when nothing is targeted. */
+.sheet { display: none; }
+.sheet:target { display: block; }
+body:has(.sheet:target) .home { display: none; }
+
+.back { display: inline-block; margin-bottom: 12px; font-size: 13px; }
 
 h1 { margin: 0 0 4px; font-size: 24px; }
 h2 { margin: 32px 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }

@@ -1,5 +1,6 @@
 # Exported pages contain database records - keep them out of git
 html/
+snapshots/
 *.accdb
 *.mdb
 *.laccdb
