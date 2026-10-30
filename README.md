@@ -14,19 +14,30 @@ The export reads the tables directly through the Access database engine. It neve
 
 ## Usage (Windows)
 
-1. Open `export.bat` in Notepad and set the database path:
-   ```bat
-   set "DB=\\server\share\HELP+.accdb"
-   ```
-2. Double-click `export.bat`.
-3. The pages are written to an `html\` folder next to the script, and `index.html` opens in your browser.
+1. Double-click `export.bat`. It finds `HELP+.accdb` automatically.
+2. The pages are written to an `html\` folder next to the script, and `index.html` opens in your browser.
+
+To use a specific database file instead, drag the `.accdb` onto `export.bat`.
+
+### How the database is found
+
+The script looks for a file named `HELP+.accdb` in this order and uses the first match:
+
+1. The location found on the last run, saved in `last-db-path.txt`
+2. The script's folder, then each parent folder above it
+3. Desktop, Documents, Downloads and OneDrive, up to 4 levels deep
+4. Every local and mapped network drive. This can take a few minutes.
+
+If a folder has more than one match, the most recently modified file wins. To look for a different file name, change `NAME` in `export.bat`.
+
+Tip: put this folder on the same share as the database (for example `\\server\share\help-tool-backup\`). Step 2 then finds it instantly.
 
 Run it again any time to refresh the snapshot.
 
 You can also run the script directly:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File export-to-html.ps1 -DbPath "C:\path\db.accdb" -OutDir ".\html" [-SkipQueries]
+powershell -ExecutionPolicy Bypass -File export-to-html.ps1 -OutDir ".\html" [-DbPath "C:\path\db.accdb"] [-DbName "HELP+.accdb"] [-SkipQueries]
 ```
 
 ## Notes
@@ -35,4 +46,4 @@ powershell -ExecutionPolicy Bypass -File export-to-html.ps1 -DbPath "C:\path\db.
 - **Queries that use forms or VBA functions can't run outside Access.** They're listed on the index page as unavailable.
 - **The Access driver comes with Office.** If you get "Access driver not available", the batch file retries with 32-bit PowerShell automatically. If it still fails, install the [Microsoft Access Database Engine](https://www.microsoft.com/en-us/download/details.aspx?id=54920) at the same 32- or 64-bit version as Office.
 - **Pictures and attachment fields show as `[binary]`.**
-- **`html/` is git-ignored** because it contains database records. Don't commit exported data to this public repo.
+- **`html/` and `last-db-path.txt` are git-ignored** because they contain database records and your network paths. Don't commit them to this public repo.

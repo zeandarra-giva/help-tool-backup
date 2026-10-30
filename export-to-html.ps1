@@ -4,19 +4,70 @@
   and no forms or VBA run, so corrupted modules don't get in the way.
 
   Usage:
-    powershell -ExecutionPolicy Bypass -File export-to-html.ps1 -DbPath "\\server\share\db.accdb" -OutDir ".\html"
+    powershell -ExecutionPolicy Bypass -File export-to-html.ps1 -OutDir ".\html" [-DbPath "X:\db.accdb"] [-DbName "HELP+.accdb"]
+
+  Without -DbPath, the database is located by file name (see Find-Database)
+  and the result is remembered in last-db-path.txt for the next run.
 
   Exit codes: 0 = ok, 1 = error, 2 = Access driver not registered for this
   PowerShell bitness (export.bat then retries with 32-bit PowerShell).
 #>
 param(
-    [Parameter(Mandatory)] [string] $DbPath,
     [Parameter(Mandatory)] [string] $OutDir,
+    [string] $DbPath,
+    [string] $DbName = 'HELP+.accdb',
     [switch] $SkipQueries
 )
 
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
+$cacheFile = Join-Path $PSScriptRoot 'last-db-path.txt'
+
+function Find-Newest([string] $root, [int] $depth = -1) {
+    if (-not (Test-Path -LiteralPath $root)) { return $null }
+    $params = @{ LiteralPath = $root; Filter = $DbName; Recurse = $true; File = $true; ErrorAction = 'SilentlyContinue' }
+    if ($depth -ge 0) { $params.Depth = $depth }
+    Get-ChildItem @params | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+}
+
+# Search order, cheapest first:
+#   1. last remembered location
+#   2. the script folder and each parent folder above it
+#   3. Desktop, Documents, Downloads, OneDrive (a few levels deep)
+#   4. every local and mapped network drive (slow, last resort)
+function Find-Database {
+    if (Test-Path -LiteralPath $cacheFile) {
+        $cached = (Get-Content -LiteralPath $cacheFile -TotalCount 1).Trim()
+        if ($cached -and (Test-Path -LiteralPath $cached)) { return $cached }
+    }
+
+    $dir = $PSScriptRoot
+    while ($dir) {
+        $candidate = Join-Path $dir $DbName
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+        $dir = Split-Path -Parent $dir
+    }
+
+    $userFolders = @(
+        [Environment]::GetFolderPath('Desktop'),
+        [Environment]::GetFolderPath('MyDocuments'),
+        (Join-Path $env:USERPROFILE 'Downloads'),
+        $env:OneDrive
+    ) | Where-Object { $_ } | Select-Object -Unique
+    foreach ($folder in $userFolders) {
+        Write-Host "Searching $folder ..."
+        $found = Find-Newest $folder 4
+        if ($found) { return $found }
+    }
+
+    $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -and (Test-Path -LiteralPath $_.Root) }
+    foreach ($drive in $drives) {
+        Write-Host "Searching $($drive.Root) (this can take a few minutes) ..."
+        $found = Find-Newest $drive.Root
+        if ($found) { return $found }
+    }
+    return $null
+}
 
 function Format-Cell([object] $v) {
     if ($null -eq $v -or $v -is [System.DBNull]) { return '' }
@@ -51,10 +102,23 @@ $body
     [System.IO.File]::WriteAllText((Join-Path $OutDir $file), $html, $utf8)
 }
 
-if (-not (Test-Path -LiteralPath $DbPath)) {
-    Write-Host "Database not found: $DbPath"
-    exit 1
+if ($DbPath) {
+    if (-not (Test-Path -LiteralPath $DbPath)) {
+        Write-Host "Database not found: $DbPath"
+        exit 1
+    }
+} else {
+    Write-Host "Looking for $DbName ..."
+    $DbPath = Find-Database
+    if (-not $DbPath) {
+        Write-Host "Could not find $DbName on this PC or its mapped drives."
+        Write-Host "Drag the database file onto export.bat to point to it directly."
+        exit 1
+    }
 }
+$DbPath = (Resolve-Path -LiteralPath $DbPath).ProviderPath
+Write-Host "Using database: $DbPath"
+[System.IO.File]::WriteAllText($cacheFile, $DbPath, $utf8)
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutDir = (Resolve-Path -LiteralPath $OutDir).ProviderPath
