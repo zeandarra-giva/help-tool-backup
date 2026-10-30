@@ -1,7 +1,8 @@
 <#
   Exports every table (and saved select query) in an Access database to ONE
-  self-contained HTML file: styles.css is inlined and every table lives in the
-  same file, so the snapshot can be shared and opened offline on its own.
+  self-contained HTML file with search, tabs and a record view. template.html,
+  styles.css, app.js and the data are all inlined, so the snapshot can be
+  shared and opened offline on its own. Tabs are configured in categories.psd1.
   Read-only: nothing in the database changes, and no forms or VBA run, so
   corrupted modules don't get in the way.
 
@@ -25,6 +26,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $cacheFile = Join-Path $PSScriptRoot 'last-db-path.txt'
+try { Add-Type -AssemblyName System.Web } catch { }
 
 function Find-Newest([string] $root, [int] $depth = -1) {
     if (-not (Test-Path -LiteralPath $root)) { return $null }
@@ -74,9 +76,9 @@ function Find-Database {
 
 function Enc([object] $v) { [System.Net.WebUtility]::HtmlEncode([string]$v) }
 
-function Format-Cell([object] $v) {
+function Format-Text([object] $v) {
     if ($null -eq $v -or $v -is [System.DBNull]) { return '' }
-    if ($v -is [byte[]]) { return '<span class="muted">[binary]</span>' }
+    if ($v -is [byte[]]) { return '[binary]' }
     if ($v -is [bool]) { if ($v) { return 'Yes' } else { return 'No' } }
     if ($v -is [datetime]) {
         # Access stores time-only values on 1899-12-30
@@ -84,7 +86,7 @@ function Format-Cell([object] $v) {
         if ($v.TimeOfDay.Ticks -eq 0) { return $v.ToString('yyyy-MM-dd') }
         return $v.ToString('yyyy-MM-dd HH:mm')
     }
-    return (Enc $v) -replace "`r?`n", '<br>'
+    return [string]$v
 }
 
 # ---------------------------------------------------------------- locate ---
@@ -154,13 +156,16 @@ foreach ($obj in $objects) {
 $conn.Close()
 
 # ---------------------------------------------------------------- render ---
-# One page, no JavaScript: each table is a <section> shown via CSS :target
-# when its link is clicked; the index shows when no table is selected.
+# One self-contained file: template.html with styles.css, app.js and the data
+# (as JSON) inlined. Tables are grouped into tabs using categories.psd1.
+
+function Test-AnyLike([string] $name, $patterns) {
+    foreach ($p in @($patterns)) { if ($name -like $p) { return $true } }
+    return $false
+}
 
 $dbTitle = [System.IO.Path]::GetFileNameWithoutExtension($DbPath)
 $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
-$cssPath = Join-Path $PSScriptRoot 'styles.css'
-$css = if (Test-Path -LiteralPath $cssPath) { [System.IO.File]::ReadAllText($cssPath) } else { '' }
 
 $usedIds = @{}
 foreach ($e in $entries) {
@@ -173,74 +178,97 @@ foreach ($e in $entries) {
     $e | Add-Member -NotePropertyName Id -NotePropertyValue $id
 }
 
-$sb = New-Object System.Text.StringBuilder
-[void]$sb.Append(@"
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>$(Enc $dbTitle) - snapshot $stamp</title>
-<style>
-$css
-</style>
-</head>
-<body>
-<header class="bar"><a href="#" class="brand">$(Enc $dbTitle)</a><span class="muted">Read-only snapshot &middot; $stamp</span></header>
+# Assign each table to the first tab whose Match pattern fits its name.
+# Leftover tables go to "Other Tables"; queries go to "Queries".
+$configPath = Join-Path $PSScriptRoot 'categories.psd1'
+$config = if (Test-Path -LiteralPath $configPath) { Import-PowerShellDataFile -LiteralPath $configPath } else { @{ Categories = @() } }
 
-"@)
-
-[void]$sb.Append("<main class=`"home`">`n<h1>$(Enc $dbTitle)</h1>`n")
-foreach ($group in @(@('Table', 'Tables'), @('Query', 'Queries'))) {
-    $items = @($entries | Where-Object Kind -eq $group[0])
-    if ($items.Count -eq 0) { continue }
-    [void]$sb.Append("<h2>$($group[1])</h2>`n<ul class=`"cards`">`n")
-    foreach ($e in $items) {
-        if ($e.Data) {
-            [void]$sb.Append("<li><a class=`"card`" href=`"#$($e.Id)`"><span class=`"card-name`">$(Enc $e.Name)</span><span class=`"muted`">$($e.Data.Rows.Count) rows</span></a></li>`n")
-        } else {
-            [void]$sb.Append("<li><div class=`"card card-off`" title=`"$(Enc $e.Error)`"><span class=`"card-name`">$(Enc $e.Name)</span><span class=`"muted`">Can't run outside Access</span></div></li>`n")
+$ready = @($entries | Where-Object Data)
+$tables = @($ready | Where-Object Kind -eq 'Table')
+$assigned = @{}
+$categories = @()
+foreach ($c in @($config.Categories)) {
+    $tabs = @()
+    foreach ($t in @($c.Tabs)) {
+        $hits = @($tables | Where-Object { -not $assigned.ContainsKey($_.Id) -and (Test-AnyLike $_.Name $t.Match) })
+        foreach ($h in $hits) {
+            $assigned[$h.Id] = $true
+            $label = if ($hits.Count -eq 1 -and $t.Label) { $t.Label } else { $h.Name }
+            $tabs += [pscustomobject]@{ Id = $h.Id; Label = $label }
         }
     }
-    [void]$sb.Append("</ul>`n")
+    if ($tabs.Count) {
+        $categories += [pscustomobject]@{ Name = $c.Name; Sidebar = ($c.Placement -eq 'Sidebar'); Tabs = $tabs }
+    }
 }
-[void]$sb.Append("</main>`n`n")
+$leftover = @($tables | Where-Object { -not $assigned.ContainsKey($_.Id) })
+if ($leftover.Count) {
+    $categories += [pscustomobject]@{ Name = 'Other Tables'; Sidebar = $false; Tabs = @($leftover | ForEach-Object { [pscustomobject]@{ Id = $_.Id; Label = $_.Name } }) }
+}
+$queries = @($ready | Where-Object Kind -eq 'Query')
+if ($queries.Count) {
+    $categories += [pscustomobject]@{ Name = 'Queries'; Sidebar = $false; Tabs = @($queries | ForEach-Object { [pscustomobject]@{ Id = $_.Id; Label = $_.Name } }) }
+}
 
-foreach ($e in ($entries | Where-Object Data)) {
+Write-Host ""
+foreach ($c in $categories) {
+    $where = if ($c.Sidebar) { 'sidebar' } else { 'top tab' }
+    Write-Host "[$($c.Name)] ($where): $(($c.Tabs | ForEach-Object Label) -join ', ')"
+}
+
+# JSON is built by hand: ConvertTo-Json is slow on large tables in PS 5.1.
+# JavaScriptStringEncode also escapes < and >, so data can't close the <script>.
+function J([object] $s) { '"' + [System.Web.HttpUtility]::JavaScriptStringEncode([string]$s) + '"' }
+
+$numTypes = @([int16], [int32], [int64], [byte], [decimal], [double], [single])
+$json = New-Object System.Text.StringBuilder
+[void]$json.Append('{"title":' + (J $dbTitle) + ',"stamp":' + (J $stamp) + ',"categories":[')
+[void]$json.Append((($categories | ForEach-Object {
+    $tabsJson = ($_.Tabs | ForEach-Object { '{"id":' + (J $_.Id) + ',"label":' + (J $_.Label) + '}' }) -join ','
+    '{"name":' + (J $_.Name) + ',"sidebar":' + $_.Sidebar.ToString().ToLower() + ',"tabs":[' + $tabsJson + ']}'
+}) -join ','))
+[void]$json.Append('],"unavailable":[' + ((@($entries | Where-Object { -not $_.Data }) | ForEach-Object { J $_.Name }) -join ',') + '],"tables":{')
+
+$first = $true
+foreach ($e in $ready) {
     $dt = $e.Data
-    [void]$sb.Append("<section class=`"sheet`" id=`"$($e.Id)`">`n<a href=`"#`" class=`"back`">&larr; All tables</a>`n")
-    [void]$sb.Append("<h1>$(Enc $e.Name) <span class=`"tag`">$($e.Kind)</span></h1>`n<p class=`"muted`">$($dt.Rows.Count) rows</p>`n")
-
-    if ($dt.Rows.Count -eq 0) {
-        [void]$sb.Append("<p class=`"empty`">No records.</p>`n")
-    } else {
-        [void]$sb.Append("<div class=`"table-wrap`"><table>`n<thead><tr>")
-        foreach ($col in $dt.Columns) { [void]$sb.Append("<th>$(Enc $col.ColumnName)</th>") }
-        [void]$sb.Append("</tr></thead>`n<tbody>`n")
-        foreach ($row in $dt.Rows) {
-            [void]$sb.Append('<tr>')
-            foreach ($col in $dt.Columns) {
-                $v = $row[$col]
-                $cls = if ($v -is [ValueType] -and $v -isnot [bool] -and $v -isnot [datetime]) { ' class="num"' } else { '' }
-                [void]$sb.Append("<td$cls>$(Format-Cell $v)</td>")
-            }
-            [void]$sb.Append("</tr>`n")
-        }
-        [void]$sb.Append("</tbody>`n</table></div>`n")
+    if (-not $first) { [void]$json.Append(',') }
+    $first = $false
+    $cols = ($dt.Columns | ForEach-Object { J $_.ColumnName }) -join ','
+    $num = ($dt.Columns | ForEach-Object { ($numTypes -contains $_.DataType).ToString().ToLower() }) -join ','
+    [void]$json.Append((J $e.Id) + ':{"name":' + (J $e.Name) + ',"kind":' + (J $e.Kind) + ',"cols":[' + $cols + '],"num":[' + $num + '],"rows":[')
+    $firstRow = $true
+    foreach ($row in $dt.Rows) {
+        if (-not $firstRow) { [void]$json.Append(',') }
+        $firstRow = $false
+        [void]$json.Append('[' + (($row.ItemArray | ForEach-Object { J (Format-Text $_) }) -join ',') + ']')
     }
-    [void]$sb.Append("</section>`n`n")
+    [void]$json.Append(']}')
 }
-[void]$sb.Append("</body>`n</html>`n")
+[void]$json.Append('}}')
+
+function Read-Asset([string] $file) {
+    $path = Join-Path $PSScriptRoot $file
+    if (-not (Test-Path -LiteralPath $path)) { Write-Host "Missing $file next to the script."; exit 1 }
+    [System.IO.File]::ReadAllText($path)
+}
+
+# Plain string Replace (not -replace) so $ and \ in the content stay literal
+$html = (Read-Asset 'template.html').
+    Replace('{{TITLE}}', (Enc "$dbTitle - snapshot $stamp")).
+    Replace('{{CSS}}', (Read-Asset 'styles.css')).
+    Replace('{{JS}}', (Read-Asset 'app.js')).
+    Replace('{{DATA}}', $json.ToString())
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutDir = (Resolve-Path -LiteralPath $OutDir).ProviderPath
 $safeTitle = $dbTitle -replace '[\\/:*?"<>|]', '_'
 $outFile = Join-Path $OutDir "$safeTitle snapshot $(Get-Date -Format 'yyyy-MM-dd HHmm').html"
-[System.IO.File]::WriteAllText($outFile, $sb.ToString(), $utf8)
+[System.IO.File]::WriteAllText($outFile, $html, $utf8)
 
 $sizeKb = [math]::Ceiling((Get-Item -LiteralPath $outFile).Length / 1KB)
 Write-Host ""
-Write-Host "Done: $(@($entries | Where-Object Data).Count) tables/queries in one file ($sizeKb KB)"
+Write-Host "Done: $($ready.Count) tables/queries in one file ($sizeKb KB)"
 Write-Host "  $outFile"
 Write-Host "Share this single file - it opens offline in any browser."
 if (-not $NoOpen) { Invoke-Item -LiteralPath $outFile }

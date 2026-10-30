@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<style>
+{{CSS}}
+</style>
+</head>
+<body>
+<header class="top">
+  <a class="logo" href="#" id="logo"></a>
+  <nav class="cats" id="cats" aria-label="Categories"></nav>
+  <div class="top-right">
+    <span class="stamp" id="stamp"></span>
+    <button type="button" class="ghost" id="theme"></button>
+  </div>
+</header>
+
+<aside class="side" id="side" aria-label="Quick access"></aside>
+
+<main class="main">
+  <div class="head">
+    <h1 id="cat-title"></h1>
+    <nav class="tabs" id="tabs" aria-label="Tables"></nav>
+  </div>
+
+  <div class="find">
+    <label for="q" class="find-label">Find:</label>
+    <div class="search">
+      <input id="q" type="search" autocomplete="off" spellcheck="false" placeholder="Type to search…">
+      <button type="button" id="clear" class="clear" aria-label="Clear search" hidden>&times;</button>
+    </div>
+    <label class="check"><input type="checkbox" id="exact"> Exact match</label>
+    <label class="check"><input type="checkbox" id="all"> Search all tables</label>
+    <span class="hint">Press <kbd>/</kbd> to search &middot; click a row for details</span>
+  </div>
+
+  <div class="result-head">
+    <h2 id="table-title"></h2>
+    <span class="muted" id="count"></span>
+  </div>
+  <div id="results"></div>
+
+  <noscript><p class="empty">This snapshot needs JavaScript. Save the file and open it in Chrome or Edge (email previews can't run it).</p></noscript>
+</main>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-label="Record details">
+  <div class="drawer-head">
+    <h3 id="drawer-title"></h3>
+    <div class="drawer-actions">
+      <button type="button" class="ghost" id="copy-all">Copy all</button>
+      <button type="button" class="ghost" id="drawer-close" aria-label="Close">&times;</button>
+    </div>
+  </div>
+  <div id="drawer-body"></div>
+</aside>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script type="application/json" id="snapshot-data">{{DATA}}</script>
+<script>
+{{JS}}
+</script>
+</body>
+</html>
