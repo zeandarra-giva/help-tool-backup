@@ -49,14 +49,22 @@
                 @{ Label = 'Mainframe'; Match = '*Mainframe*' }
             )
         }
+        # The two groups below sit in the sidebar under the contacts, as in HELP+
         @{
-            Name = 'Other Tools'
-            Tabs = @(
+            Name      = 'Tracking tools'
+            Placement = 'Sidebar'
+            Tabs      = @(
                 @{ Label = 'Severity'; Match = '*Severity*' }
                 @{ Label = 'MIM Tracker'; Match = '*MIM*' }
-                @{ Label = 'INC Groups'; Match = '*INC*Group*' }
-                @{ Label = 'INC Tracker'; Match = '*INC*' }
-                @{ Label = 'Canned Responses'; Match = '*Canned*' }
+                @{ Label = 'INC Tracker'; Match = '*INC*Track*', '*Incident*' }
+            )
+        }
+        @{
+            Name      = 'Copy tools'
+            Placement = 'Sidebar'
+            Tabs      = @(
+                @{ Label = 'INC groups'; Match = '*INC*Group*' }
+                @{ Label = 'Canned responses'; Match = '*Canned*', '*Response*' }
             )
         }
     )

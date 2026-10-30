@@ -141,7 +141,8 @@
     var t = D.tables[state.table];
     var idxs = findRows(state.table, m);
     $('table-title').textContent = labelOf(state.table);
-    $('count').textContent = m ? idxs.length + ' of ' + t.rows.length + ' rows' : t.rows.length + ' rows';
+    var rowsWord = t.rows.length === 1 ? ' row' : ' rows';
+    $('count').textContent = m ? idxs.length + ' of ' + t.rows.length + rowsWord : t.rows.length + rowsWord;
 
     if (!t.rows.length) {
       res.innerHTML = '<p class="empty">This table has no records.</p>';
